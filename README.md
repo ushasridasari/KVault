@@ -1,27 +1,27 @@
 # KVault
 
-A Redis-compatible in-memory key-value store built from scratch in Python.
+A lightweight in-memory key-value store built from scratch in Python, with its own custom wire protocol, data types, TTL expiry, and persistence.
 
-KVault implements the **RESP v2 wire protocol** so any standard Redis client
-(`redis-cli`, `redis-py`, `ioredis`, etc.) can connect to it without modification.
+---
+
+## What It Does
+
+- Clients connect over TCP and send commands like `SET name Alice` / `GET name`
+- Data is stored in RAM for fast access
+- Keys can auto-expire after a set time (TTL)
+- Data is saved to disk periodically so it survives a restart
 
 ---
 
 ## Features
 
-| Layer | What's implemented |
-|---|---|
-| **Protocol** | Full RESP v2 parser + encoder (simple strings, errors, integers, bulk strings, arrays, null variants) |
-| **Data types** | Strings · Lists (via `deque`) · Hashes |
-| **String commands** | `GET` `SET` `GETSET` `MGET` `MSET` `MSETNX` `SETNX` `SETEX` `PSETEX` `INCR` `DECR` `INCRBY` `DECRBY` `INCRBYFLOAT` `APPEND` `STRLEN` `GETRANGE` |
-| **Key commands** | `DEL` `EXISTS` `TYPE` `KEYS` `RENAME` `EXPIRE` `PEXPIRE` `EXPIREAT` `PERSIST` `TTL` `PTTL` |
-| **List commands** | `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LRANGE` `LLEN` `LINDEX` `LSET` `LINSERT` |
-| **Hash commands** | `HSET` `HGET` `HMGET` `HMSET` `HGETALL` `HDEL` `HEXISTS` `HLEN` `HKEYS` `HVALS` `HINCRBY` |
-| **Server commands** | `PING` `ECHO` `DBSIZE` `FLUSHDB` `COMMAND` |
-| **TTL / expiry** | Per-key expiry with lazy eviction (checked on access) |
-| **Persistence** | Gzip-compressed JSON snapshot (foreground `SAVE` + background `BGSAVE`) with configurable auto-save |
-| **Concurrency** | `asyncio`-based server — handles many concurrent clients on one thread |
-| **Thread safety** | `RLock`-protected store for safe use from background persistence threads |
+- **Custom wire protocol** — binary-framed parser written from scratch
+- **3 data types** — Strings, Lists, Hashes
+- **55+ commands** — SET, GET, EXPIRE, TTL, LPUSH, HSET, and more
+- **TTL / expiry** — keys auto-delete after their deadline
+- **Persistence** — snapshots saved to disk (foreground + background)
+- **Async server** — handles many clients concurrently using `asyncio`
+- **110 tests** — covering protocol, store, and command layers
 
 ---
 
@@ -30,166 +30,102 @@ KVault implements the **RESP v2 wire protocol** so any standard Redis client
 ```
 kvault/
 ├── kvault/
-│   ├── protocol/
-│   │   ├── parser.py        # Incremental RESP v2 parser
-│   │   └── encoder.py       # RESP v2 encoder
-│   ├── commands/
-│   │   ├── registry.py      # Command dispatcher
-│   │   ├── strings.py       # String command handlers
-│   │   ├── keys.py          # Generic key command handlers
-│   │   ├── lists.py         # List command handlers
-│   │   ├── hashes.py        # Hash command handlers
-│   │   └── server_cmds.py   # PING, ECHO, DBSIZE, FLUSHDB
-│   ├── persistence/
-│   │   └── rdb.py           # Snapshot save / load
-│   ├── store.py             # Thread-safe in-memory KV store
-│   └── server.py            # asyncio TCP server
-├── tests/
-│   ├── test_protocol.py     # 29 RESP parser/encoder tests
-│   ├── test_store.py        # 46 store unit tests
-│   └── test_commands.py     # 35 command integration tests
-├── client.py                # Interactive CLI client
-└── main.py                  # Server entry point
+│   ├── protocol/       # Wire protocol parser & encoder
+│   ├── commands/       # All command handlers (strings, lists, hashes, keys)
+│   ├── persistence/    # Snapshot save & load
+│   ├── store.py        # In-memory data store with TTL
+│   └── server.py       # Async TCP server
+├── tests/              # 110 unit & integration tests
+├── client.py           # Interactive CLI client
+└── main.py             # Server entry point
 ```
 
 ---
 
 ## Quickstart
 
-### 1. Run the server
-
+**1. Start the server**
 ```bash
 python main.py
-# KVault listening on 127.0.0.1:6399
+# Listening on 127.0.0.1:6399
 ```
 
-Options:
-
-```
---host          Bind address          (default: 127.0.0.1)
---port          Bind port             (default: 6399)
---rdb           Snapshot file path    (default: kvault_dump.rdb)
---save-interval Auto-save seconds     (default: 300)
---loglevel      DEBUG/INFO/WARNING    (default: INFO)
-```
-
-### 2. Connect with the built-in client
-
+**2. Connect with the built-in client**
 ```bash
 python client.py
-# Connected to KVault 127.0.0.1:6399. Type 'quit' to exit.
+```
 
-127.0.0.1:6399> SET user:1 Alice
+**3. Try some commands**
+```
+> SET user Alice
 "OK"
-127.0.0.1:6399> GET user:1
+> GET user
 "Alice"
-127.0.0.1:6399> EXPIRE user:1 60
+> EXPIRE user 60
 (integer) 1
-127.0.0.1:6399> TTL user:1
+> TTL user
 (integer) 59
+> LPUSH colors red green blue
+(integer) 3
+> LRANGE colors 0 -1
+1) "blue"
+2) "green"
+3) "red"
 ```
 
-Semicolons pipeline multiple commands on one line:
-
-```
-127.0.0.1:6399> SET a 1; SET b 2; MGET a b c
-"OK"
-"OK"
-1) "1"
-2) "2"
-3) (nil)
-```
-
-### 3. Connect with `redis-cli` (standard Redis client)
-
-```bash
-redis-cli -p 6399
-```
-
-### 4. Run tests
-
+**4. Run tests**
 ```bash
 pip install pytest
 python -m pytest tests/ -v
+# 110 passed
 ```
 
 ---
 
-## Design Notes
+## Server Options
 
-### RESP Parser — incremental, zero-copy
-
-`RESPParser` maintains an internal `bytearray` buffer.  Incoming TCP chunks
-are `feed()`-ed in; parsed values are consumed by iterating the parser.
-The buffer advances only when a full message is available, so partial frames
-(common under high load) are handled correctly without copying data.
-
-### Lazy expiry
-
-Expired keys are **not** scanned eagerly.  Instead, every read operation
-checks `_expire_if_needed()` and evicts on the first access after the
-deadline.  This is the same strategy Redis uses and keeps the hot path fast.
-
-### Thread safety
-
-The `KVStore` is protected by a single `threading.RLock`.  Compound
-operations (e.g. `SET NX`, `MSETNX`, `LINSERT`) hold the lock for their
-entire duration, ensuring atomicity even when background persistence threads
-call `snapshot()` concurrently.
-
-### Persistence
-
-Snapshots are written atomically: a `.tmp` file is written first, then
-`Path.replace()` does an atomic rename.  This prevents a crash mid-write
-from corrupting the last good snapshot.
+| Flag | Default | Description |
+|---|---|---|
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `6399` | Bind port |
+| `--rdb` | `kvault_dump.rdb` | Snapshot file |
+| `--save-interval` | `300` | Auto-save every N seconds |
+| `--loglevel` | `INFO` | Log verbosity |
 
 ---
 
-## Architecture Diagram
+## Supported Commands
+
+| Type | Commands |
+|---|---|
+| **String** | `GET` `SET` `MGET` `MSET` `INCR` `DECR` `APPEND` `STRLEN` `SETNX` `SETEX` |
+| **List** | `LPUSH` `RPUSH` `LPOP` `RPOP` `LRANGE` `LLEN` `LINDEX` `LSET` `LINSERT` |
+| **Hash** | `HSET` `HGET` `HMGET` `HGETALL` `HDEL` `HEXISTS` `HLEN` `HKEYS` `HVALS` `HINCRBY` |
+| **Key** | `DEL` `EXISTS` `TYPE` `KEYS` `RENAME` `EXPIRE` `TTL` `PTTL` `PERSIST` |
+| **Server** | `PING` `ECHO` `DBSIZE` `FLUSHDB` |
+
+---
+
+## How It Works
 
 ```
-Client (redis-cli / kvault client.py)
-        │  TCP  (RESP wire protocol)
-        ▼
-┌─────────────────────────────────────┐
-│          KVaultServer               │
-│   asyncio event loop + StreamReader │
-│                                     │
-│   ClientHandler (per connection)    │
-│   ┌──────────┐   ┌──────────────┐  │
-│   │  RESP    │   │   RESP       │  │
-│   │  Parser  │──▶│   Encoder    │  │
-│   └──────────┘   └──────────────┘  │
-│         │                ▲         │
-│         ▼                │         │
-│   CommandRegistry.dispatch()        │
-│         │                │         │
-│         ▼                │         │
-│      KVStore (strings / lists / hashes + TTL)
-│         │                          │
-│   RDBSnapshot (background save)    │
-└─────────────────────────────────────┘
+Client (TCP)
+    │  custom wire protocol
+    ▼
+AsyncIO Server
+    │
+    ├── Protocol Parser   →  decodes raw bytes into commands
+    ├── Command Registry  →  routes to the right handler
+    ├── KV Store          →  reads/writes data (thread-safe, TTL-aware)
+    └── RDB Snapshot      →  saves store to disk in background
 ```
 
 ---
 
-## Test Results
+## Tech Stack
 
-```
-110 passed in 3.33s
-```
-
-- **29** RESP protocol tests (parser + encoder roundtrips)  
-- **46** KVStore unit tests (strings, lists, hashes, TTL, snapshot)  
-- **35** command integration tests (full dispatch path)
-
----
-
-## Extending KVault
-
-To add a new command:
-
-1. Write a handler `fn(store: KVStore, args: list[bytes]) -> Any` in the
-   appropriate module under `kvault/commands/`.
-2. Add it to that module's `COMMANDS` dict.
-3. The `CommandRegistry` picks it up automatically — no changes needed there.
+- **Language:** Python 3.10+
+- **Concurrency:** `asyncio`
+- **Testing:** `pytest`
+- **Persistence:** gzip-compressed JSON snapshot
+- **No external dependencies** for the core server
